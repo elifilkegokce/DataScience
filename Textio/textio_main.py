@@ -7,6 +7,8 @@ Assume that success means a rating of 4.5 or above and a reviewer count of 100 o
 import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
+from sklearn.ensemble import RandomForestClassifier
+import statsmodels.api as sm
 
 
 def check_missing_values(input_data):
@@ -107,19 +109,32 @@ def add_publisher_attributes(model_data):
     publisher_summary = model_data.groupby('Publisher', as_index=False).agg({'Book title': 'count',
                                                                              'Author name': 'nunique',
                                                                              'Star rating': 'mean',
-                                                                             'Number of reviews': 'mean',
-                                                                             'Length': 'mean'}).\
+                                                                             'Number of reviews': 'mean'}).\
         rename(columns={'Book title': 'Publisher number of books',
                         'Author name': 'Publisher number of authors',
                         'Star rating': 'Publisher mean star rating',
-                        'Number of reviews': 'Publisher mean number of reviews',
-                        'Length': 'Publisher mean length'})
+                        'Number of reviews': 'Publisher mean number of reviews'})
 
     print('Number of model data rows before adding publisher summary = {}'.format(str(len(model_data))))
     model_data = model_data.merge(publisher_summary, how='left', on='Publisher')
     print('Number of model data rows after adding publisher summary = {}'.format(str(len(model_data))))
 
     return model_data
+
+
+def run_random_forest(x, y):
+    classifier = RandomForestClassifier(n_estimators=100)
+    classifier.fit(x, y)
+    feature_importance = pd.Series(classifier.feature_importances_, index=x.columns).sort_values(ascending=False)
+    return feature_importance
+
+
+def run_logistic_regression(x, y):
+    logit_model = sm.Logit(y, x)
+    logistic_regression_results = logit_model.fit()
+    return logistic_regression_results
+
+
 
 
 
@@ -159,7 +174,6 @@ def predict_author_success():
     model_data = add_success_attribute(model_data, success_definition)
 
     # Step 2.2: Descriptive statistics for success
-    # https://towardsdatascience.com/building-a-logistic-regression-in-python-step-by-step-becd4d56c9c8
     # TODO: Add descriptive statistics for success, profile of a successful author
     print(model_data['Success'].value_counts())
     # Observations: Our classes are imbalanced, and the ratio of no-success to success is 73:27
@@ -171,25 +185,40 @@ def predict_author_success():
     model_data.groupby(['Publisher']).agg(['mean', 'count']).to_csv('publisher_summary.csv')
     # TODO: Add descriptive statistics
 
-    # Step 3: Run modeling
-
-    # Run random foreast
-
-
-    model_data_no_success = model_data[model_data['Success'] == 0]
-    model_data_success = model_data[model_data['Success'] == 1]
-
-
-
-
-
-    # Step 2.2: Add Publisher related attributes
     model_data = add_publisher_attributes(model_data)
 
+    # Step 3: Run modeling
+
+    # TODO: Split train and test data, measure accuracy
+
+    # Run random forest
+    random_forest_importance = run_random_forest(model_data[['Length',
+                                                             'Publisher mean star rating',
+                                                             'Publisher number of authors',
+                                                             'Publisher number of books',
+                                                             'Publisher mean number of reviews']],
+                                                 model_data['Success'])
+    print(random_forest_importance)
+
+    # Run logistic regression
+    # TODO: Model accuracy, confusion matrix
+    logistic_regression_results = run_logistic_regression(model_data[['Length',
+                                                                      'Publisher mean star rating',
+                                                                      'Publisher number of authors',
+                                                                      'Publisher number of books',
+                                                                      'Publisher mean number of reviews']],
+                                                          model_data['Success'])
+    print(logistic_regression_results.summary2())
 
 
-
-    # Step
+    logistic_regression_results = run_logistic_regression(model_data[['Length',
+                                                                      #'Publisher mean star rating',
+                                                                      'Publisher number of authors',
+                                                                      'Publisher number of books',
+                                                                      'Publisher mean number of reviews']],
+                                                          model_data['Success'])
+    print(logistic_regression_results.summary2())
+    np.exp(logistic_regression_results.params)
 
 if __name__ == '__main__':
     main()
