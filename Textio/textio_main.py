@@ -1,5 +1,5 @@
 '''
-Elif Ilke Gokce's answer to the Textio interview question
+Elif Gokce's answer to the Textio interview question
 What factors make a Young Adult author more likely to be successful?
 Assume that success means a rating of 4.5 or above and a reviewer count of 100 or above
 '''
@@ -9,6 +9,37 @@ import numpy as np
 from matplotlib import pyplot as plt
 from sklearn.ensemble import RandomForestClassifier
 import statsmodels.api as sm
+from scipy.stats import ttest_ind
+from sklearn import preprocessing
+from sklearn.model_selection import train_test_split
+
+
+def create_summary_statistics(input_data):
+    '''
+    Create summary statistics
+    :param input_data:
+    :return: column types, continuous columns, publishers, authors, books
+    '''
+
+    # get column types
+    input_data.dtypes.to_frame('dtypes').reset_index().to_csv('summary_stats_dtypes.csv')
+
+    # get continuous data profiling
+    input_data.describe().transpose().reset_index().to_csv('summary_stats_continuous.csv')
+
+    # get summary statistics by publisher#
+    input_data.groupby("Publisher")[['Star rating', 'Number of reviews', 'Length']]\
+        .describe().reset_index().to_csv('summary_stats_publishers.csv')
+
+    # get summary statistics by authors
+    input_data.groupby("Author name")[['Star rating', 'Number of reviews', 'Length']]\
+        .describe().reset_index().to_csv('summary_stats_authors.csv')
+
+    # get summary statistics by books
+    input_data.groupby("Book title")[['Star rating', 'Number of reviews', 'Length']]\
+        .describe().reset_index().to_csv('summary_stats_books.csv')
+
+    return 'summary statistics created'
 
 
 def check_missing_values(input_data):
@@ -88,6 +119,7 @@ def visualize_outliers(input_data, control_limits):
 
     return 'outliers.pdf created'
 
+
 def add_success_attribute(input_data, success_definition):
     '''
     Add sucess attribute to the input data
@@ -104,28 +136,73 @@ def add_success_attribute(input_data, success_definition):
     return input_data
 
 
-def add_publisher_attributes(model_data):
+def add_publisher_group(model_data):
 
-    publisher_summary = model_data.groupby('Publisher', as_index=False).agg({'Book title': 'count',
+    number_of_books = model_data.groupby('Publisher', as_index=False).agg({'Book title': 'count'})
+    filter_others = model_data['Publisher'].isin(number_of_books[number_of_books['Book title'] == 1]['Publisher'].tolist())
+    model_data['Publisher group'] = model_data['Publisher']
+    model_data.loc[filter_others, 'Publisher group'] = 'Other Success = ' + model_data.loc[filter_others, 'Success'].astype(str)
+
+    return model_data
+
+
+def add_publisher_group_attributes(model_data):
+
+    publisher_group_summary = model_data.groupby('Publisher group', as_index=False).agg({'Book title': 'count',
                                                                              'Author name': 'nunique',
                                                                              'Star rating': 'mean',
                                                                              'Number of reviews': 'mean'}).\
-        rename(columns={'Book title': 'Publisher number of books',
-                        'Author name': 'Publisher number of authors',
-                        'Star rating': 'Publisher mean star rating',
-                        'Number of reviews': 'Publisher mean number of reviews'})
+        rename(columns={'Book title': 'Publisher group number of books',
+                        'Author name': 'Publisher group number of authors',
+                        'Star rating': 'Publisher groupmmean star rating',
+                        'Number of reviews': 'Publisher group mean number of reviews'})
 
     print('Number of model data rows before adding publisher summary = {}'.format(str(len(model_data))))
-    model_data = model_data.merge(publisher_summary, how='left', on='Publisher')
+    model_data = model_data.merge(publisher_group_summary, how='left', on='Publisher group')
     print('Number of model data rows after adding publisher summary = {}'.format(str(len(model_data))))
 
     return model_data
 
 
-def run_random_forest(x, y):
-    classifier = RandomForestClassifier(n_estimators=100)
-    classifier.fit(x, y)
-    feature_importance = pd.Series(classifier.feature_importances_, index=x.columns).sort_values(ascending=False)
+def run_independent_ttest(model_data, correlation_columns):
+
+    ttest_results = []
+    for column in correlation_columns:
+        ttest_output = ttest_ind(model_data[model_data['Success'] == 0][column],
+                                 model_data[model_data['Success'] == 1][column])
+        if ttest_output.pvalue > 0.05:
+            result = 'no difference between means'
+        else:
+            result = 'means are different'
+        ttest_results.append({'Column': column, 'pvalue': ttest_output.pvalue.round(2), 'result': result})
+    ttest_results = pd.DataFrame.from_dict(ttest_results)
+    return ttest_results
+
+
+def normalize_data(model_data, correlation_columns):
+    normalized_model_data = model_data.copy()
+    for column in correlation_columns:
+        print(column)
+        x_array = np.array(model_data[column])
+        normalized_model_data[column] = preprocessing.normalize([x_array])[0]
+    return normalized_model_data
+
+
+
+def run_random_forest(x_train, y_train, x_test, y_test):
+    classifier = RandomForestClassifier(n_estimators=100, random_state = 42)
+    classifier.fit(x_train, y_train)
+    feature_importance = pd.Series(classifier.feature_importances_, index=x_test.columns).sort_values(ascending=False)
+    predictions = classifier.predict(x_test)
+    errors = abs(predictions - y_test)
+    mean_error = round(np.mean(errors), 2)
+    feature_importance = pd.DataFrame(feature_importance).reset_index().rename(columns={'index': 'Variable',
+                                                                                        0: 'Importance'})
+
+    accuracy = 1 - mean_error
+    feature_importance['Model MAE'] = mean_error
+    feature_importance['Accuracy'] = accuracy
+
     return feature_importance
 
 
@@ -142,16 +219,25 @@ def predict_author_success():
 
     input_data_columns = ['Star rating', 'Number of reviews', 'Length']
     success_definition = {'Minimum rating': 4.5, 'Minimum reviewer count': 100}
+    remove_outliers = False
+    correlation_columns = ['Length', 'Publisher group number of books',
+                           'Publisher groupmmean star rating',
+                           'Publisher group mean number of reviews']
+    test_size = 0.2
+    random_state = 42
 
     # Step 0: Read input data
     input_data = pd.read_csv('2016 YA books.csv')
 
-    # Step 1: Clean data set
-    # Step 1.1: Get columns with missing values
-    columns_wit_missing_values = check_missing_values(input_data)
-    print('Columns with missing values = {}'.format(columns_wit_missing_values))
+    print('columns with missing values')
+    columns_with_missing_values = check_missing_values(input_data)
+    print('Columns with missing values = {}'.format(columns_with_missing_values))
 
-    # Step 1.2: Detect outliers for continuous columns
+    print('Summary statistics')
+    create_summary_statistics(input_data)
+
+    # Step 1: Process data set
+    # Step 1.2: Detect outliers for continuous variables
     control_limits = get_control_limits(input_data, input_data_columns, 3, 3)
     print(control_limits)
 
@@ -160,7 +246,6 @@ def predict_author_success():
 
     print('Number of outliers detected = {}'.
           format(str(len(input_data_with_outliers[input_data_with_outliers['Outlier'] == 1]))))
-    remove_outliers = False
     if remove_outliers:
         print('Outliers removed')
         model_data = input_data_with_outliers[input_data_with_outliers['Outlier'] == 0]
@@ -168,37 +253,46 @@ def predict_author_success():
         print('No outliers removed')
         model_data = input_data
 
-    # Step 2: Add attributes
-
-    # Step 2.1: Add success attribute
+    # Step 1.3: Add success attribute
     model_data = add_success_attribute(model_data, success_definition)
 
-    # Step 2.2: Descriptive statistics for success
-    # TODO: Add descriptive statistics for success, profile of a successful author
-    print(model_data['Success'].value_counts())
-    # Observations: Our classes are imbalanced, and the ratio of no-success to success is 73:27
+    # Step 1.4: Add publisher group
+    model_data = add_publisher_group(model_data)
 
-    model_data.groupby('Success').mean().to_csv('continuous_variables_summary.csv')
-    # Observations: Close stars, 5x more reviews for successful, close length
+    # Step 1.4: Add Publisher group attributes
+    model_data = add_publisher_group_attributes(model_data)
 
-    # Categtorical: Publisher
-    model_data.groupby(['Publisher']).agg(['mean', 'count']).to_csv('publisher_summary.csv')
-    # TODO: Add descriptive statistics
+    # Step 2: Explore data
+    # Step 2.1: Descriptive statistics for success
+    model_data.to_csv('model_data.csv')
+    model_data.groupby("Success")[['Star rating', 'Number of reviews', 'Length']]\
+        .describe().reset_index().to_csv('summary_stats_success.csv')
 
-    model_data = add_publisher_attributes(model_data)
+    # Step 2.2: Correlation between columns
+    model_data[correlation_columns].corr().round(2).to_csv('correlation_matrix.csv')
 
-    # Step 3: Run modeling
+    # Step 2.3: Run independent t-test to check means
+    ttest_results = run_independent_ttest(model_data, correlation_columns)
+    ttest_results.to_csv('ttest.csv')
 
-    # TODO: Split train and test data, measure accuracy
+    # Step 3: Run models
+    # Step 3.1: Normalize data
+    normalized_model_data = normalize_data(model_data, correlation_columns)
 
-    # Run random forest
-    random_forest_importance = run_random_forest(model_data[['Length',
-                                                             'Publisher mean star rating',
-                                                             'Publisher number of authors',
-                                                             'Publisher number of books',
-                                                             'Publisher mean number of reviews']],
-                                                 model_data['Success'])
-    print(random_forest_importance)
+    # Step 3.2:
+    training_model_data, test_model_data = train_test_split(normalized_model_data,
+                                                            test_size=test_size,
+                                                            random_state = random_state)
+
+    # Step 3.3: Run random forest
+    random_forest_importance = run_random_forest(training_model_data[correlation_columns],
+                                                 training_model_data['Success'],
+                                                 test_model_data[correlation_columns],
+                                                 test_model_data['Success'])
+    random_forest_importance.to_csv('results_random_forest.csv')
+
+    # Step 3.4: Run logistic regression
+
 
     # Run logistic regression
     # TODO: Model accuracy, confusion matrix
@@ -210,7 +304,6 @@ def predict_author_success():
                                                           model_data['Success'])
     print(logistic_regression_results.summary2())
 
-
     logistic_regression_results = run_logistic_regression(model_data[['Length',
                                                                       #'Publisher mean star rating',
                                                                       'Publisher number of authors',
@@ -218,7 +311,9 @@ def predict_author_success():
                                                                       'Publisher mean number of reviews']],
                                                           model_data['Success'])
     print(logistic_regression_results.summary2())
-    np.exp(logistic_regression_results.params)
+    print(np.exp(logistic_regression_results.params))
+
+
 
 if __name__ == '__main__':
     main()
