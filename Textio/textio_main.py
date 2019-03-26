@@ -12,7 +12,8 @@ import statsmodels.api as sm
 from scipy.stats import ttest_ind
 from sklearn import preprocessing
 from sklearn.model_selection import train_test_split
-
+from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_curve, auc
 
 def create_summary_statistics(input_data):
     '''
@@ -190,28 +191,29 @@ def normalize_data(model_data, correlation_columns):
 
 
 def run_random_forest(x_train, y_train, x_test, y_test):
-    classifier = RandomForestClassifier(n_estimators=100, random_state = 42)
+    classifier = RandomForestClassifier(n_estimators=100, random_state = 42, max_features='sqrt')
     classifier.fit(x_train, y_train)
     feature_importance = pd.Series(classifier.feature_importances_, index=x_test.columns).sort_values(ascending=False)
     predictions = classifier.predict(x_test)
-    errors = abs(predictions - y_test)
-    mean_error = round(np.mean(errors), 2)
     feature_importance = pd.DataFrame(feature_importance).reset_index().rename(columns={'index': 'Variable',
                                                                                         0: 'Importance'})
 
-    accuracy = 1 - mean_error
-    feature_importance['Model MAE'] = mean_error
-    feature_importance['Accuracy'] = accuracy
+    false_positive_rate, true_positive_rate, thresholds = roc_curve(y_test, predictions)
+    roc_auc = auc(false_positive_rate, true_positive_rate)
+    feature_importance['ROC AUC'] = roc_auc
 
     return feature_importance
 
 
-def run_logistic_regression(x, y):
-    logit_model = sm.Logit(y, x)
+def run_logistic_regression(x_train, y_train):
+    logit_model = sm.Logit(y_train, x_train)
     logistic_regression_results = logit_model.fit()
     return logistic_regression_results
 
-
+def get_logistic_regression_importance(logistic_regression_results):
+    logistic_regression_importance = pd.DataFrame(logistic_regression_results.params).rename(columns={0: 'coef'}).reset_index().\
+        merge(pd.DataFrame(logistic_regression_results.pvalues).rename(columns={0: 'pval'}).reset_index(), how='left', on='index')
+    return logistic_regression_importance
 
 
 
@@ -292,26 +294,17 @@ def predict_author_success():
     random_forest_importance.to_csv('results_random_forest.csv')
 
     # Step 3.4: Run logistic regression
+    logistic_regression_results = run_logistic_regression(training_model_data[correlation_columns],
+                                                          training_model_data['Success'])
 
-
-    # Run logistic regression
-    # TODO: Model accuracy, confusion matrix
-    logistic_regression_results = run_logistic_regression(model_data[['Length',
-                                                                      'Publisher mean star rating',
-                                                                      'Publisher number of authors',
-                                                                      'Publisher number of books',
-                                                                      'Publisher mean number of reviews']],
-                                                          model_data['Success'])
     print(logistic_regression_results.summary2())
 
-    logistic_regression_results = run_logistic_regression(model_data[['Length',
-                                                                      #'Publisher mean star rating',
-                                                                      'Publisher number of authors',
-                                                                      'Publisher number of books',
-                                                                      'Publisher mean number of reviews']],
-                                                          model_data['Success'])
-    print(logistic_regression_results.summary2())
-    print(np.exp(logistic_regression_results.params))
+    get_logistic_regression_importance(logistic_regression_results).to_csv('importance_logistic_regression.csv')
+
+    predictions = logistic_regression_results.predict(test_model_data[correlation_columns])
+    roc = roc_auc_score(test_model_data['Success'], predictions)
+
+    print('ROC AUC = {}'.format(str(roc)))
 
 
 
