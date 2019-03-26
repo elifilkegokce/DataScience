@@ -24,21 +24,26 @@ def create_summary_statistics(input_data):
 
     # get column types
     input_data.dtypes.to_frame('dtypes').reset_index().to_csv('summary_stats_dtypes.csv')
+    print('CSV file {} is created'.format('summary_stats_dtypes.csv'))
 
     # get continuous data profiling
     input_data.describe().transpose().reset_index().to_csv('summary_stats_continuous.csv')
+    print('CSV file {} is created'.format('summary_stats_continuous.csv'))
 
     # get summary statistics by publisher#
     input_data.groupby("Publisher")[['Star rating', 'Number of reviews', 'Length']]\
         .describe().reset_index().to_csv('summary_stats_publishers.csv')
+    print('CSV file {} is created'.format('summary_stats_publishers.csv'))
 
     # get summary statistics by authors
     input_data.groupby("Author name")[['Star rating', 'Number of reviews', 'Length']]\
         .describe().reset_index().to_csv('summary_stats_authors.csv')
+    print('CSV file {} is created'.format('summary_stats_authors.csv'))
 
     # get summary statistics by books
     input_data.groupby("Book title")[['Star rating', 'Number of reviews', 'Length']]\
         .describe().reset_index().to_csv('summary_stats_books.csv')
+    print('CSV file {} is created'.format('summary_stats_books.csv'))
 
     return 'summary statistics created'
 
@@ -138,6 +143,12 @@ def add_success_attribute(input_data, success_definition):
 
 
 def add_publisher_group(model_data):
+    '''
+    Add publisher group attribute
+        For each publisher, if total number of books = 1, then 'other', else publisher name
+    :param model_data:
+    :return: Publisher group attribute
+    '''
 
     number_of_books = model_data.groupby('Publisher', as_index=False).agg({'Book title': 'count'})
     filter_others = model_data['Publisher'].isin(number_of_books[number_of_books['Book title'] == 1]['Publisher'].tolist())
@@ -166,6 +177,12 @@ def add_publisher_group_attributes(model_data):
 
 
 def run_independent_ttest(model_data, correlation_columns):
+    '''
+    Run independent ttest to measure means
+    :param model_data:
+    :param correlation_columns:
+    :return:
+    '''
 
     ttest_results = []
     for column in correlation_columns:
@@ -181,6 +198,13 @@ def run_independent_ttest(model_data, correlation_columns):
 
 
 def normalize_data(model_data, correlation_columns):
+    '''
+    Normalize data since there is magnitude differences accross groups
+    :param model_data:
+    :param correlation_columns:
+    :return:
+    '''
+
     normalized_model_data = model_data.copy()
     for column in correlation_columns:
         print(column)
@@ -189,14 +213,27 @@ def normalize_data(model_data, correlation_columns):
     return normalized_model_data
 
 
-
 def run_random_forest(x_train, y_train, x_test, y_test):
-    classifier = RandomForestClassifier(n_estimators=100, random_state = 42, max_features='sqrt')
+    '''
+    Run random forest
+    Calculate feature importance
+    Calculate ROC AUC score
+    Plot ROC AUC curve
+    :param x_train: Training variables
+    :param y_train: Training response variable
+    :param x_test: Test variables
+    :param y_test: Test response variable
+    :return: Variable importance
+    '''
+
+    classifier = RandomForestClassifier(n_estimators=100, random_state=42, max_features='sqrt')
     classifier.fit(x_train, y_train)
     feature_importance = pd.Series(classifier.feature_importances_, index=x_test.columns).sort_values(ascending=False)
     predictions = classifier.predict(x_test)
     feature_importance = pd.DataFrame(feature_importance).reset_index().rename(columns={'index': 'Variable',
                                                                                         0: 'Importance'})
+
+    # measure model quality
 
     false_positive_rate, true_positive_rate, thresholds = roc_curve(y_test, predictions)
     roc_auc = auc(false_positive_rate, true_positive_rate)
@@ -217,14 +254,18 @@ def get_logistic_regression_importance(logistic_regression_results):
 
 
 
-def predict_author_success():
+def identify_author_success_factors():
+    '''
+    Main function to indentify factors make a Young Adult author more likely to be successful
+    :return:
+    '''
 
     input_data_columns = ['Star rating', 'Number of reviews', 'Length']
     success_definition = {'Minimum rating': 4.5, 'Minimum reviewer count': 100}
     remove_outliers = False
-    correlation_columns = ['Length', 'Publisher group number of books',
-                           'Publisher groupmmean star rating',
-                           'Publisher group mean number of reviews']
+    model_columns = ['Length', 'Publisher group number of books',
+                     'Publisher group mmean star rating',
+                     'Publisher group mean number of reviews']
     test_size = 0.2
     random_state = 42
 
@@ -271,15 +312,15 @@ def predict_author_success():
         .describe().reset_index().to_csv('summary_stats_success.csv')
 
     # Step 2.2: Correlation between columns
-    model_data[correlation_columns].corr().round(2).to_csv('correlation_matrix.csv')
+    model_data[model_columns].corr().round(2).to_csv('correlation_matrix.csv')
 
     # Step 2.3: Run independent t-test to check means
-    ttest_results = run_independent_ttest(model_data, correlation_columns)
+    ttest_results = run_independent_ttest(model_data, model_columns)
     ttest_results.to_csv('ttest.csv')
 
     # Step 3: Run models
     # Step 3.1: Normalize data
-    normalized_model_data = normalize_data(model_data, correlation_columns)
+    normalized_model_data = normalize_data(model_data, model_columns)
 
     # Step 3.2:
     training_model_data, test_model_data = train_test_split(normalized_model_data,
@@ -287,21 +328,21 @@ def predict_author_success():
                                                             random_state = random_state)
 
     # Step 3.3: Run random forest
-    random_forest_importance = run_random_forest(training_model_data[correlation_columns],
+    random_forest_importance = run_random_forest(training_model_data[model_columns],
                                                  training_model_data['Success'],
-                                                 test_model_data[correlation_columns],
+                                                 test_model_data[model_columns],
                                                  test_model_data['Success'])
     random_forest_importance.to_csv('results_random_forest.csv')
 
     # Step 3.4: Run logistic regression
-    logistic_regression_results = run_logistic_regression(training_model_data[correlation_columns],
+    logistic_regression_results = run_logistic_regression(training_model_data[model_columns],
                                                           training_model_data['Success'])
 
     print(logistic_regression_results.summary2())
 
     get_logistic_regression_importance(logistic_regression_results).to_csv('importance_logistic_regression.csv')
 
-    predictions = logistic_regression_results.predict(test_model_data[correlation_columns])
+    predictions = logistic_regression_results.predict(test_model_data[model_columns])
     roc = roc_auc_score(test_model_data['Success'], predictions)
 
     print('ROC AUC = {}'.format(str(roc)))
@@ -309,4 +350,4 @@ def predict_author_success():
 
 
 if __name__ == '__main__':
-    main()
+    identify_author_success_factors()
