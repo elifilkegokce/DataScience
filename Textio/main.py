@@ -12,8 +12,11 @@ import statsmodels.api as sm
 from scipy.stats import ttest_ind
 from sklearn import preprocessing
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score
-from sklearn.metrics import roc_curve, auc
+from sklearn.metrics import roc_auc_score, roc_curve, auc
+from sklearn.metrics import confusion_matrix, accuracy_score, average_precision_score
+from sklearn.model_selection import ShuffleSplit
+from sklearn.model_selection import learning_curve
+from sklearn.preprocessing import OneHotEncoder
 
 def create_summary_statistics(input_data):
     '''
@@ -166,7 +169,7 @@ def add_publisher_group_attributes(model_data):
                                                                              'Number of reviews': 'mean'}).\
         rename(columns={'Book title': 'Publisher group number of books',
                         'Author name': 'Publisher group number of authors',
-                        'Star rating': 'Publisher groupmmean star rating',
+                        'Star rating': 'Publisher group mean star rating',
                         'Number of reviews': 'Publisher group mean number of reviews'})
 
     print('Number of model data rows before adding publisher summary = {}'.format(str(len(model_data))))
@@ -213,45 +216,83 @@ def normalize_data(model_data, correlation_columns):
     return normalized_model_data
 
 
-def run_random_forest(x_train, y_train, x_test, y_test):
-    '''
-    Run random forest
-    Calculate feature importance
-    Calculate ROC AUC score
-    Plot ROC AUC curve
-    :param x_train: Training variables
-    :param y_train: Training response variable
-    :param x_test: Test variables
-    :param y_test: Test response variable
-    :return: Variable importance
-    '''
+class RandomForest:
 
-    classifier = RandomForestClassifier(n_estimators=100, random_state=42, max_features='sqrt')
-    classifier.fit(x_train, y_train)
-    feature_importance = pd.Series(classifier.feature_importances_, index=x_test.columns).sort_values(ascending=False)
-    predictions = classifier.predict(x_test)
-    feature_importance = pd.DataFrame(feature_importance).reset_index().rename(columns={'index': 'Variable',
-                                                                                        0: 'Importance'})
+    def __init__(self, x_train, y_train, x_test, y_test):
 
-    # measure model quality
+        classifier = RandomForestClassifier(n_estimators=100, random_state=42, max_features='sqrt')
+        classifier.fit(x_train, y_train)
 
-    false_positive_rate, true_positive_rate, thresholds = roc_curve(y_test, predictions)
-    roc_auc = auc(false_positive_rate, true_positive_rate)
-    feature_importance['ROC AUC'] = roc_auc
+        feature_importance = self.get_feature_importance(classifier)
+        self.plot_predictor_importance(feature_importance)
 
-    return feature_importance
+        y_predicted_train = classifier.predict(x_train)
+        cm = confusion_matrix(y_train, y_predicted_train)
+        auc = roc_auc_score(y_train, y_predicted_train)
+        confusion_matrix_train = self.get_confusion_matrix_statistics(cm, auc)
 
+        prediction_score = 100.0 * classifier.score(x_test, y_test)
 
-def run_logistic_regression(x_train, y_train):
-    logit_model = sm.Logit(y_train, x_train)
-    logistic_regression_results = logit_model.fit()
-    return logistic_regression_results
+        y_predicted_test = classifier.predict(x_test)
+        cm = confusion_matrix(y_test, y_predicted_test)
+        auc = roc_auc_score(y_test, y_predicted_test)
+        confusion_matrix_test = self.get_confusion_matrix_statistics(cm, auc)
 
-def get_logistic_regression_importance(logistic_regression_results):
-    logistic_regression_importance = pd.DataFrame(logistic_regression_results.params).rename(columns={0: 'coef'}).reset_index().\
-        merge(pd.DataFrame(logistic_regression_results.pvalues).rename(columns={0: 'pval'}).reset_index(), how='left', on='index')
-    return logistic_regression_importance
+        self.get_roc_curve(x_train, x_test, y_test, classifier, auc)
 
+    def get_feature_importance(self, classifier):
+        feature_importance = pd.Series(classifier.feature_importances_, index=x_train.columns).\
+            sort_values(ascending=False)
+        feature_importance = pd.DataFrame(feature_importance).reset_index().rename(columns={'index': 'Variable',
+                                                                                            0: 'Importance'})
+        return feature_importance
+
+    def plot_predictor_importance(self, feature_importance):
+        fig = plt.figure(figsize=(10, 6))
+        ax = fig.add_subplot(111)
+        yvals = range(len(feature_importance['Variable']))
+        ax.barh(yvals, feature_importance['Importance'], align='center', alpha=0.4)
+        plt.yticks(yvals, feature_importance['Variable'])
+        plt.tight_layout()
+        # ax.set_xlabel('Relative Importance')
+        # ax.set_title('Predictor Importance')
+        for a, b in zip(yvals, feature_importance['Importance']):
+            ax.text(b, a, str(round(b, 2)))
+        plt.show()
+
+    def get_confusion_matrix_statistics(self, cm, auc):
+        true_negative = cm[0, 0]
+        true_positive = cm[1, 1]
+        false_negative = cm[1, 0]
+        false_positive = cm[0, 1]
+
+        total = true_negative + true_positive + false_negative + false_positive
+        accuracy = (true_positive + true_negative) / total
+        precision = (true_positive) / (true_positive + false_positive)
+        recall = (true_positive) / (true_positive + false_negative)
+        misclassification_rate = (false_positive + false_negative) / total
+        F1 = (2 * true_positive) / (2 * true_positive + false_positive + false_negative)
+
+        matrix_stats = {'true_negative': true_negative, 'true_positive': true_positive,
+                        'false_negative':false_negative, 'false_positive':false_positive,
+                        'accuracy':accuracy, 'precision':precision, 'recall':recall,
+                        'misclassification_rate':misclassification_rate, 'F1':F1, 'auc':auc}
+        return matrix_stats
+
+    def get_roc_curve(self, x_train, x_test, y_test, classifier, auc):
+        one_hot_encoder = OneHotEncoder()
+        fit = one_hot_encoder.fit(classifier.apply(x_train))
+        y_predicted = classifier.predict_proba(x_test)[:, 1]
+        false_positive, true_positive, _ = roc_curve(y_test, y_predicted)
+
+        plt.figure()
+        plt.plot([0, 1], [0, 1], 'k--')
+        plt.plot(false_positive, true_positive, color='darkorange', label='Random Forest')
+        plt.xlabel('False positive rate')
+        plt.ylabel('True positive rate')
+        plt.title('ROC curve (area = %0.2f)' % auc)
+        plt.legend(loc='best')
+        plt.show()
 
 
 def identify_author_success_factors():
@@ -264,7 +305,7 @@ def identify_author_success_factors():
     success_definition = {'Minimum rating': 4.5, 'Minimum reviewer count': 100}
     remove_outliers = False
     model_columns = ['Length', 'Publisher group number of books',
-                     'Publisher group mmean star rating',
+                     'Publisher group mean star rating',
                      'Publisher group mean number of reviews']
     test_size = 0.2
     random_state = 42
@@ -325,27 +366,14 @@ def identify_author_success_factors():
     # Step 3.2:
     training_model_data, test_model_data = train_test_split(normalized_model_data,
                                                             test_size=test_size,
-                                                            random_state = random_state)
+                                                            random_state=random_state)
 
     # Step 3.3: Run random forest
-    random_forest_importance = run_random_forest(training_model_data[model_columns],
-                                                 training_model_data['Success'],
-                                                 test_model_data[model_columns],
-                                                 test_model_data['Success'])
-    random_forest_importance.to_csv('results_random_forest.csv')
+    random_forest = RandomForest(training_model_data[model_columns], training_model_data['Success'],
+                                 test_model_data[model_columns], test_model_data['Success'])
 
-    # Step 3.4: Run logistic regression
-    logistic_regression_results = run_logistic_regression(training_model_data[model_columns],
-                                                          training_model_data['Success'])
 
-    print(logistic_regression_results.summary2())
-
-    get_logistic_regression_importance(logistic_regression_results).to_csv('importance_logistic_regression.csv')
-
-    predictions = logistic_regression_results.predict(test_model_data[model_columns])
-    roc = roc_auc_score(test_model_data['Success'], predictions)
-
-    print('ROC AUC = {}'.format(str(roc)))
+    
 
 
 
